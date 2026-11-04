@@ -1,1 +1,0 @@
-# gakufu-app
