@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>音符修正つき楽譜認識システム</title>
+    <title>本格楽譜認識＆演奏システム</title>
     <style>
         body { 
             font-family: -apple-system, BlinkMacSystemFont, sans-serif; 
@@ -15,34 +15,28 @@
             border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.08); box-sizing: border-box;
         }
         h2 { margin-top: 0; color: #1a1a1a; font-size: 22px; border-bottom: 2px solid #f0f2f5; padding-bottom: 10px; }
-        .description { font-size: 13px; color: #666; line-height: 1.5; margin-bottom: 10px; }
-        .instruction-box { background: #e0f2fe; color: #0369a1; padding: 12px; border-radius: 8px; font-size: 13px; font-weight: bold; margin: 10px 0; border-left: 4px solid #0284c7; }
+        .description { font-size: 14px; color: #666; line-height: 1.5; }
         .loading-opencv { background: #fff3cd; color: #856404; padding: 10px; border-radius: 6px; text-align: center; font-size: 13px; font-weight: bold; margin-bottom: 15px; }
-        input[type="file"] { margin: 10px 0; padding: 10px; background: #f8f9fa; border-radius: 6px; width: 100%; box-sizing: border-box; }
-        
-        /* 編集可能な譜面キャンバスエリア */
-        .preview-box { position: relative; border: 2px dashed #cbd5e1; margin: 15px 0; background: #fafafa; border-radius: 8px; overflow: hidden; display: flex; justify-content: center; align-items: center; min-height: 250px; }
-        #canvasOutput { max-width: 100%; display: none; cursor: pointer; }
+        input[type="file"] { margin: 15px 0; padding: 10px; background: #f8f9fa; border-radius: 6px; width: 100%; box-sizing: border-box; }
+        .preview-box { border: 2px dashed #cbd5e1; padding: 10px; text-align: center; margin: 15px 0; min-height: 200px; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #fafafa; border-radius: 8px; }
+        #canvasOutput { max-width: 100%; max-height: 350px; display: none; border: 1px solid #e2e8f0; border-radius: 4px; }
         img { display: none; }
-        
         .button-group { display: flex; gap: 10px; margin: 15px 0; }
         button { flex: 1; padding: 14px; font-size: 15px; font-weight: bold; background: #007aff; color: white; border: none; border-radius: 8px; cursor: pointer; }
         button:disabled { background: #e2e8f0; color: #94a3b8; cursor: not-allowed; }
         #status { font-weight: 600; margin: 15px 0; color: #475569; padding: 10px; background: #e2e8f0; border-radius: 6px; text-align: center; font-size: 14px; }
+        #recognized-notes { background: #1e293b; color: #38bdf8; padding: 15px; border-radius: 8px; font-family: monospace; white-space: pre-wrap; margin-top: 10px; font-size: 13px; max-height: 150px; overflow-y: auto; }
     </style>
-    <!-- OpenCV.js を読み込む -->
+    <!-- OpenCV.js を読み込む（画像認識エンジン） -->
     <script async src="https://opencv.org" onload="onOpenCvReady();" type="text/javascript"></script>
 </head>
 <body>
 
 <div class="container">
-    <h2>音符修正つき楽譜認識システム</h2>
+    <h2>本格楽譜認識＆演奏システム</h2>
     <div id="opencv-status" class="loading-opencv">⏳ 画像認識AIエンジン(OpenCV)を起動中...</div>
+    <p class="description">五線譜の画像をアップロードすると、AIが5本線を自動検出して解析します。</p>
     
-    <p class="description">①楽譜画像を読み込んでガチ解析します。②間違った音符があれば<b>iPadの画面上の音符を直接タップ</b>して正しい高さに修正できます！</p>
-    
-    <div class="instruction-box">💡 使い方: 解析後、譜面上の丸（音符）をタップすると音階が1つずつ上に上がります！（ド→レ→ミ→ファ…）</div>
-
     <input type="file" id="file-input" accept="image/*" disabled>
     
     <div class="preview-box">
@@ -57,6 +51,9 @@
         <button id="btn-analyze" disabled>① 楽譜をガチ解析する</button>
         <button id="btn-play" disabled>② 演奏スタート</button>
     </div>
+
+    <h3>スキャン抽出データ（楽譜の5本線情報）:</h3>
+    <div id="recognized-notes">楽譜が解析されると、検出された線の座標データが表示されます。</div>
 </div>
 
 <script>
@@ -65,26 +62,9 @@ let inputElement = document.getElementById('file-input');
 let btnAnalyze = document.getElementById('btn-analyze');
 let btnPlay = document.getElementById('btn-play');
 let statusDiv = document.getElementById('status');
-let canvas = document.getElementById('canvasOutput');
-let ctx = canvas.getContext('2d');
 let cvReady = false;
 
-// 認識・編集用の音符データ保持
-let notesData = [
-    { x: 100, step: 0, label: 'C4' }, // ド
-    { x: 170, step: 1, label: 'D4' }, // レ
-    { x: 240, step: 2, label: 'E4' }, // ミ
-    { x: 310, step: 3, label: 'F4' }, // ファ
-    { x: 380, step: 4, label: 'G4' }, // ソ
-    { x: 450, step: 5, label: 'A4' }  // ラ
-];
-
-const NOTE_STEPS = ['C4', 'D4', 'E4', 'F4', 'G4', 'A4', 'B4', 'C5'];
-const NOTE_FREQS = { 'C4': 261.63, 'D4': 293.66, 'E4': 329.63, 'F4': 349.23, 'G4': 392.00, 'A4': 440.00, 'B4': 493.88, 'C5': 523.25 };
-
-// スキャンした画像を保持するオブジェクト
-let baseImgData = null;
-
+// OpenCVの起動完了イベント
 function onOpenCvReady() {
     cvReady = true;
     document.getElementById('opencv-status').style.display = 'none';
@@ -93,176 +73,110 @@ function onOpenCvReady() {
 }
 
 inputElement.addEventListener('change', (e) => {
-    imgElement.src = URL.createObjectURL(e.target.files);
+    imgElement.src = URL.createObjectURL(e.target.files[0]);
 }, false);
 
 imgElement.onload = function() {
     document.getElementById('placeholder').style.display = 'none';
+    let canvas = document.getElementById('canvasOutput');
     canvas.style.display = 'block';
     
-    // キャンバスサイズを画像に固定
-    canvas.width = 550;
-    canvas.height = 300;
+    // 画像を一度そのまま表示
+    let ctx = canvas.getContext('2d');
+    canvas.width = imgElement.naturalWidth;
+    canvas.height = imgElement.naturalHeight;
+    ctx.drawImage(imgElement, 0, 0);
     
-    // 初期背景画像として描画
-    ctx.drawImage(imgElement, 0, 0, canvas.width, canvas.height);
-    baseImgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    
-    statusDiv.innerText = "ステータス: 画像が読み込まれました。解析してください。";
+    statusDiv.innerText = "ステータス: 画像が読み込まれました。解析ボタンを押してください。";
     btnAnalyze.disabled = false;
     btnPlay.disabled = true;
 };
 
-// 譜面と音符を描画するメイン関数
-function drawStaffAndNotes() {
-    if (!baseImgData) return;
-    
-    // 1. スキャン後の背景画像を再描画
-    ctx.putImageData(baseImgData, 0, 0);
-    
-    // 2. その上に現在の音符データを「青い丸」で上書き描画
-    notesData.forEach(note => {
-        // step数(0=ド, 1=レ...)に応じてY座標を逆算して配置
-        // 五線譜の高さに合わせて調整(基準C4をY=220pxとする)
-        let yPos = 220 - (note.step * 12); 
-        
-        // 音符の丸を描画
-        ctx.beginPath();
-        ctx.arc(note.x, yPos, 10, 0, 2 * Math.PI);
-        ctx.fillStyle = "#007aff";
-        ctx.fill();
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = "#002d62";
-        ctx.stroke();
-        
-        // 音名ラベルを上にテキスト描画
-        ctx.fillStyle = "#1e293b";
-        ctx.font = "bold 14px sans-serif";
-        ctx.textAlign = "center";
-        ctx.fillText(note.label, note.x, yPos - 18);
-    });
-}
-
-// --- ① 本格画像スキャンロジック（OpenCV） ---
+// --- 本格画像スキャンロジック（OpenCV） ---
 btnAnalyze.addEventListener('click', () => {
     if (!cvReady) return;
-    statusDiv.innerText = "ステータス: 楽譜から五線譜をスキャン中...";
+    statusDiv.innerText = "ステータス: 画像から五線譜を検出中...";
     btnAnalyze.disabled = true;
 
+    // 処理のために少し待つ
     setTimeout(() => {
+        // 1. OpenCVに画像を読み込ませる
         let src = cv.imread(imgElement);
         let dst = cv.Mat.zeros(src.rows, src.cols, cv.CV_8UC3);
         let gray = new cv.Mat();
         let edges = new cv.Mat();
         let lines = new cv.Mat();
 
+        // 2. 白黒（グレースケール）に変換
         cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+        // 3. 輪郭（エッジ）をはっきりさせる
         cv.Canny(gray, edges, 50, 200, 3, false);
+        // 4. ハフ変換（HoughLinesP）で画像から「真っ直ぐな横線」だけを検出
         cv.HoughLinesP(edges, lines, 1, Math.PI / 180, 100, 100, 10);
 
-        // 五線譜の横線を検出して画像に赤い線を合成
+        // 5. 検出した五線譜の線を赤い線で画面に描画する
+        let detectedLines =;
         for (let i = 0; i < lines.rows; ++i) {
             let val = lines.data32S;
             let j = i * 4;
             let startPoint = new cv.Point(val[j], val[j+1]);
             let endPoint = new cv.Point(val[j+2], val[j+3]);
+            
+            // ほぼ真横の線（五線譜）だけを対象にするフィルタ
             if (Math.abs(startPoint.y - endPoint.y) < 3) {
                 cv.line(dst, startPoint, endPoint, new cv.Scalar(255, 0, 0, 255), 2);
+                detectedLines.push(`横線検出: Y座標 ${startPoint.y}px (長さ: ${Math.abs(startPoint.x - endPoint.x)}px)`);
             }
         }
 
-        cv.addWeighted(src, 0.6, dst, 0.4, 0, src);
+        // 元画像と赤い線をブレンドして表示
+        cv.addWeighted(src, 0.5, dst, 0.5, 0, src);
         cv.imshow('canvasOutput', src);
 
-        // メモリ解放
+        // メモリ解放（OpenCVのお約束）
         src.delete(); dst.delete(); gray.delete(); edges.delete(); lines.delete();
 
-        // 処理後の画像データを背景として保存
-        baseImgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        // 結果の出力
+        if(detectedLines.length > 0) {
+            document.getElementById('recognized-notes').innerText = `【解析成功】\n` + detectedLines.slice(0, 10).join('\n') + `\n...他 合計 ${detectedLines.length} 本のライン要素を捕捉。`;
+            statusDiv.innerText = "ステータス: 五線譜の検出に成功しました！";
+        } else {
+            document.getElementById('recognized-notes').innerText = "線が検出できませんでした。もっとはっきりした五線譜の画像で試してください。";
+            statusDiv.innerText = "ステータス: 線を検出できませんでした";
+        }
         
-        // 音符を重ねて描画
-        drawStaffAndNotes();
-
-        statusDiv.innerText = "ステータス: 解析＆マッピング完了！音符をタップして修正できます。";
         btnPlay.disabled = false;
         btnAnalyze.disabled = false;
     }, 100);
 });
 
-// --- タップで音符を修正する機能（手動インターフェース） ---
-canvas.addEventListener('click', (e) => {
-    if (!baseImgData) return;
-
-    // iPadのタップ座標を取得
-    const rect = canvas.getBoundingClientRect();
-    const touchX = e.clientX - rect.left;
-    
-    // タップされた位置に一番近い音符を探す（横軸の距離で判定）
-    let clickedNote = null;
-    let minDistance = 35; // 35ピクセル以内ならタップ判定
-    
-    notesData.forEach(note => {
-        let dist = Math.abs(note.x - touchX);
-        if (dist < minDistance) {
-            minDistance = dist;
-            clickedNote = note;
-        }
-    });
-
-    // もし音符がタップされていたら、音階を1つ進める（ルーフ処理）
-    if (clickedNote) {
-        clickedNote.step = (clickedNote.step + 1) % NOTE_STEPS.length;
-        clickedNote.label = NOTE_STEPS[clickedNote.step];
-        
-        // 修正された状態の譜面を再描画
-        drawStaffAndNotes();
-        statusDiv.innerText = `修正しました: 音符を「${clickedNote.label}」に変更しました。`;
-        
-        // 単発で変更した音をピーンと鳴らす（確認用）
-        playImmediateTone(NOTE_FREQS[clickedNote.label]);
-    }
-});
-
-// --- ② 演奏エンジン (Web Audio API) ---
+// --- 演奏処理 (Web Audio API) ---
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-
-function playImmediateTone(freq) {
-    if (audioCtx.state === 'suspended') audioCtx.resume();
+function playTone(freq, duration, startTime) {
     const osc = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
     osc.type = 'triangle';
-    osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
-    gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.3);
-    osc.connect(gain); gain.connect(audioCtx.destination);
-    osc.start(); osc.stop(audioCtx.currentTime + 0.3);
+    osc.frequency.setValueAtTime(freq, startTime);
+    gain.gain.setValueAtTime(0.2, startTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, startTime + duration - 0.03);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start(startTime); osc.stop(startTime + duration);
 }
 
 btnPlay.addEventListener('click', () => {
     if (audioCtx.state === 'suspended') audioCtx.resume();
-    statusDiv.innerText = "ステータス: 修正後の音符データで演奏中 ♫";
+    statusDiv.innerText = "ステータス: 検出された楽譜ラインを基準にダミー演奏中 ♫";
     
+    // 仮の演奏メロディ（ドミソド）
     let now = audioCtx.currentTime;
-    let accumulatedTime = 0.1;
-
-    // 画面上で修正された最新の音符データをループして演奏
-    notesData.forEach((item) => {
-        const freq = NOTE_FREQS[item.label];
-        const duration = 0.5; // 各音0.5秒
-        
-        const osc = audioCtx.createOscillator();
-        const gain = audioCtx.createGain();
-        osc.type = 'triangle';
-        osc.frequency.setValueAtTime(freq, now + accumulatedTime);
-        gain.gain.setValueAtTime(0.2, now + accumulatedTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, now + accumulatedTime + duration - 0.03);
-        
-        osc.connect(gain);
-        gain.connect(audioCtx.destination);
-        
-        osc.start(now + accumulatedTime);
-        osc.stop(now + accumulatedTime + duration);
-        
-        accumulatedTime += duration;
+    let melody = [261.63, 329.63, 392.00, 523.25];
+    melody.forEach((freq, i) => {
+        playTone(freq, 0.4, now + (i * 0.4));
     });
+    setTimeout(() => { statusDiv.innerText = "ステータス: 演奏終了"; }, 1600);
+});
+</script>
 
+</body>
+</html>
